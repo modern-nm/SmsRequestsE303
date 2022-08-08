@@ -2,15 +2,12 @@
 using System.Collections.Generic;
 using System.Diagnostics.Contracts;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Xml.Linq;
-
-
-
+using System.Windows.Forms;
 
 namespace SmsRequestsE303
 {
@@ -19,44 +16,29 @@ namespace SmsRequestsE303
         static async Task Main(string[] args)
         {
             System.Net.ServicePointManager.Expect100Continue = false;
-
             HttpClient client = new HttpClient();
-            client.BaseAddress = new Uri(@"http://192.168.1.1");
-            //Uri uri = new Uri("http://192.168.1.5/awtadfg");
             try
             {
                 string text = args[1];
-                string phone = args[0];
+                string phone = NormalizePhone(args[0]);
+
+                if (!IsPhoneValid(phone))
+                {
+                    MessageBox.Show($"Phone number {phone} is not valid", "Invalid PhoneNumber", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
                 string now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"); //2022-07-01 17:52:37
                 string xml = $@"<?xml version=""1.0"" encoding=""UTF-8""?>
                             <request>
-<Index>-1</Index>
-<Phones><Phone>{phone}</Phone></Phones>
-<Sca></Sca>
-<Content>{text}</Content>
-<Length>{text.Length}</Length>
-<Reserved>1</Reserved>
-<Date>{now}</Date>
-</request>";
-                //                string xm = $@"<?xml version=""1.0"" encoding =""UTF-8""?>
-                //<request>
-                //    <Index>-1</Index>
-                //    <Phones><Phone>+375336742726</Phone></Phones>
-                //    <Sca></Sca>
-                //    <Content>Uasd</Content>
-                //    <Length>4</Length>
-                //    <Reserved>1</Reserved>
-                //    <Date>2022-08-07 17:52:37</Date>
-                //</request>";
-                string xm = $@"<request>
-    <Index>-1</Index>
-    <Phones><Phone>+375336742726</Phone></Phones>
-    <Sca></Sca>
-    <Content>Uasd</Content>
-    <Length>4</Length>
-    <Reserved>1</Reserved>
-    <Date>2022-08-07 17:52:37</Date>
-</request>";
+                                <Index>-1</Index>
+                                <Phones><Phone>{phone}</Phone></Phones>
+                                <Sca></Sca>
+                                <Content>{text}</Content>
+                                <Length>{text.Length}</Length>
+                                <Reserved>1</Reserved>
+                                <Date>{now}</Date>
+                            </request>";
 
 
                 HttpRequestMessage request = new HttpRequestMessage();
@@ -64,64 +46,99 @@ namespace SmsRequestsE303
                 request.Method = HttpMethod.Post;
 
 
-                request.Content = new StringContent(xm, Encoding.UTF8, "text/xml");
-                //SmsContent content = new SmsContent(xml, "text/xml");
-                //HttpResponseMessage response = await client.PostAsync(uri, content);
-                try
+                request.Content = new StringContent(xml, Encoding.UTF8, "text/xml");
+                HttpResponseMessage response = await client.SendAsync(request);
+                Console.WriteLine(response.RequestMessage);
+                if (response.StatusCode == HttpStatusCode.OK)
                 {
-                    HttpResponseMessage response = await client.SendAsync(request);
-                    Console.WriteLine(response.RequestMessage);
-                    if (response.StatusCode == HttpStatusCode.OK)
-                    {
-                        Console.WriteLine(response.StatusCode);
-                    }
-                    else
-                    {
-                        Console.WriteLine(response.StatusCode + " smthing went wrong");
-                    }
+                    
+                    Console.WriteLine(response.StatusCode);
+                    MessageBox.Show(response.StatusCode + "The message was sent.", "OK", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    TryWriteLog(response, phone, text, now);
                 }
-                catch (Exception f)
+                else
                 {
-
-                    Console.WriteLine($"{f.Message}\n{f.StackTrace}\n{f.Source}\n{f.Data}");
+                    Console.WriteLine(response.StatusCode + "! Something went wrong");
+                    MessageBox.Show(response.StatusCode + "! Bad response, see logs. The message was not sent.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    TryWriteLog(response, phone, text, now);
                 }
-
-
-
-
-
             }
             catch (Exception e)
             {
-
+                TryWriteCrashLog(e);
                 Console.WriteLine($"{e.Message}\n{e.StackTrace}\n{e.Source}\n{e.Data}");
             }
             Console.ReadLine();
         }
-    }
-
-    public class SmsContent : HttpContent
-    {
-        public string Content { get; set; }
-        public string ContentType { get; set; }
-
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext context)
+        public static bool TryWriteLog(HttpResponseMessage responseMessage, string phone, string text, string date)
         {
-            Contract.Assert(stream != null);
-
-            return Task.CompletedTask;
-        }
-
-        protected override bool TryComputeLength(out long length)
-        {
-            length = Content.Length;
-            return true;
             
+            try
+            {
+                FileStream fs = new FileStream(AppDomain.CurrentDomain.BaseDirectory + "log.txt", FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                StreamWriter sw = new StreamWriter(fs);
+                sw.WriteLine($"status:{responseMessage.StatusCode}\tphone:{phone}\ttext:{text}\tdate:{date}");
+                sw.Close();
+                fs.Close();
+                sw.Dispose();
+                fs.Dispose();
+                return true;
+            }
+            catch (Exception e)
+            {
+
+                MessageBox.Show(e.Message, "Error!", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                FileStream fs = new FileStream(AppDomain.CurrentDomain.BaseDirectory + "crash.txt", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite);
+                StreamWriter sw = new StreamWriter(fs);
+                sw.WriteLine($"{DateTime.Now} {e.Message}\n{e.StackTrace}\n{e.Source}\n{e.Data}");
+                sw.WriteLine($"status:{responseMessage.StatusCode}\tphone:{phone}\ttext:{text}\tdate:{date}");
+                sw.Close();
+                fs.Close();
+                sw.Dispose();
+                fs.Dispose();
+                return false;
+            }
         }
-        public SmsContent(string content, string contentType)
+        public static bool TryWriteCrashLog(Exception e)
         {
-            Content = content;
-            ContentType = contentType;
+            try
+            {
+                FileStream fs = new FileStream(AppDomain.CurrentDomain.BaseDirectory + "crash.txt", FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite);
+                StreamWriter sw = new StreamWriter(fs);
+                sw.WriteLine($"{DateTime.Now} {e.Message}\n{e.StackTrace}\n{e.Source}\n{e.Data}");
+                return true;
+            }
+            catch (Exception)
+            {
+                MessageBox.Show("Error during to write crashlog!", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
         }
-    }
+
+        public static bool IsPhoneValid(string phone)
+        {
+            Regex regex = new Regex(@"\+375\d{9}");
+
+            return regex.IsMatch(phone);
+        }
+
+        public static string NormalizePhone(string phone)
+        {
+            string result = "";
+
+
+            for(int i = 0; i < phone.Length; i++)
+            {
+                if (IsDigit(phone[i]))
+                    result += phone[i];
+            }
+            return result;
+        }
+
+        public static bool IsDigit(char ch)
+        {
+            return (ch >= '0' && ch <= '9') || ch=='+';
+        }
+
+    }    
 }
